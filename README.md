@@ -3,6 +3,10 @@
 Zero-dependency Python remake of the `purebible` terminal client.
 Vim keys. btop-style bars. Pipes like a good Unix citizen. No Qt, no build.
 
+Stateless by design: no daemon, no server, no background state. Every
+invocation reads the KJV text fresh and exits; the TUI keeps results in
+memory only and writes nothing.
+
 ```
 purebible "God | Jesus"        # OR search
 purebible "God Jesus"          # exact phrase
@@ -12,11 +16,11 @@ purebible lookup "Rom 12:1-2"  # ranges + whole chapters ("John 3")
 purebible tui "love*"          # fullscreen: j/k, /, :, n/N, y, q
 ```
 
-## Install from GitHub (Arch Linux)
+## Install (PyPI)
 
 ```sh
 sudo pacman -S python-pipx      # isolated CLI installs, the Arch-friendly way
-pipx install git+https://github.com/ripekern/purebible-py.git
+pipx install purebible
 mkdir -p ~/.local/share/purebible   # KJV text, 9 MB, public domain
 curl -L https://raw.githubusercontent.com/dewhisna/KingJamesPureBibleSearch/master/text/complete/SW1769Bible_both.txt \
   -o ~/.local/share/purebible/SW1769Bible_both.txt
@@ -24,11 +28,15 @@ purebible "John 3:16"           # verify
 purebible tui                   # full-screen mode
 ```
 
-No AUR package (yet). `pipx` keeps it off system python — Arch is
+`pipx` keeps it off system python — Arch is
 externally-managed, so plain `pip` would need `--break-system-packages`.
-Without pipx: `pip install --user --break-system-packages
-git+https://github.com/ripekern/purebible-py.git`. Zero runtime
-dependencies either way (curses ships with Arch's `python`).
+Zero runtime dependencies either way (curses ships with Arch's `python`).
+
+From GitHub instead: `pipx install
+git+https://github.com/ripekern/purebible-py.git`.
+
+No AUR package yet — new AUR registrations are currently paused for
+spam, so it can't be submitted right now. Planned once they reopen.
 
 ## Install for development
 
@@ -92,7 +100,7 @@ Flags mirror the old client: `-c/--case`, `-A/--abbrev`,
 ## License
 
 Open source. Code is GPL-3.0-or-later (same as the project it was ported
-from); the King James Bible text itself is public domain.
+from) — see [LICENSE](LICENSE); the King James Bible text itself is public domain.
 
 ## Notes / differences
 
