@@ -11,7 +11,7 @@ Modes (nvim-style):
 Layout
     ┌ header (reverse video): purebible · KJV 1769 · 31,102 verses · 12ms · N hits
     │ query line + results: ref (theme-colored/bold) + wrapped verse text
-    └ statusline: nvim-style mode tag (-- NORMAL -- / -- INSERT -- ...)
+    └ statusline: nvim-style mode tag (highlighted NORMAL / INSERT / ...)
 """
 from __future__ import annotations
 
@@ -727,30 +727,30 @@ class _UI:
         return mid
 
     def _tag_attr(self, kind: str) -> int:
-        """lualine-style mode-tag color (bold monochrome under NO_COLOR)."""
+        """lualine-style mode-tag highlight (theme color + reverse)."""
         import curses
         if self._mono:
-            return curses.A_BOLD
+            return curses.A_BOLD | curses.A_REVERSE
         pair = {"normal": 2, "insert": 3, "command": 4, "help": 5}.get(kind, 2)
         try:
-            return curses.color_pair(pair) | curses.A_BOLD
+            return curses.color_pair(pair) | curses.A_BOLD | curses.A_REVERSE
         except Exception:
-            return curses.A_BOLD
+            return curses.A_BOLD | curses.A_REVERSE
 
     def _footer(self, stdscr, H: int, W: int, kind: str, rest: str, right: str = "",
                 cursor: int = -1) -> None:
-        """Status bar: colored mode tag + current search, stats right-aligned.
+        """Status bar: highlighted mode tag + current search, stats right-aligned.
 
-        No reverse highlighting — plain text throughout (stats dimmed).
+        Mode tag uses the theme color with reverse highlighting (stats dimmed).
         A transient flash message takes over the middle until next keypress.
         cursor >= 0 draws a block caret at that index of rest (prompt modes).
         """
         import curses
         if self._flash is not None:
             rest, right, cursor = self._flash, "", -1
-        tags = {"normal": "-- NORMAL --", "insert": "-- INSERT --",
-                "command": "-- COMMAND --", "help": "-- HELP --"}
-        tag = tags.get(kind, "-- NORMAL --") + " "
+        tags = {"normal": " NORMAL ", "insert": " INSERT ",
+                "command": " COMMAND ", "help": " HELP "}
+        tag = tags.get(kind, " NORMAL ") + " "
         dim = getattr(curses, "A_DIM", 0)
         try:
             x = 0
