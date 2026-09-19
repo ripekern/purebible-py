@@ -33,7 +33,7 @@ _THEME_CACHE: str | None = None
 # -- built-in help screen (:h / :help) -------------------------------------
 # ("h1"/"h2" = section headers, "row" = key/desc column, "" = plain body)
 # NOTE: examples live in :help (SEARCH_EXAMPLES below + FAMOUS_PATTERNS)
-# — the start screen is just the program title. CLI flag tables are
+# — the start screen just points at :h. CLI flag tables are
 # imported from cli.py so the two helps can't drift apart.
 
 from .cli import LOOKUP_OPTS, SEARCH_OPTS
@@ -903,8 +903,8 @@ class _UI:
                 pass
 
     def _draw_welcome(self, stdscr, H: int, W: int) -> None:
-        """Start screen: program title, nothing else."""
-        self._draw_centered(stdscr, H, W, 1, [("purebible", "title")])
+        """Start screen: directions to the help overlay, nothing else."""
+        self._draw_centered(stdscr, H, W, 1, [("type :h for help", "title")])
         right = f"{len(self.bible):,} verses"
         if self.mode == "insert":
             self._footer(stdscr, H, W, "insert", f"/{self.buf}", right,
