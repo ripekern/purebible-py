@@ -21,12 +21,17 @@ purebible tui "love*"          # fullscreen: j/k, /, :, n/N, y, q
 ```sh
 sudo pacman -S python-pipx      # isolated CLI installs, the Arch-friendly way
 pipx install purebible
-mkdir -p ~/.local/share/purebible   # KJV text, 9 MB, public domain
-curl -L https://raw.githubusercontent.com/dewhisna/KingJamesPureBibleSearch/master/text/complete/SW1769Bible_both.txt \
-  -o ~/.local/share/purebible/SW1769Bible_both.txt
 purebible "John 3:16"           # verify
 purebible tui                   # full-screen mode
 ```
+
+The KJV text (9 MB, public domain) ships bundled inside the package —
+no setup needed. To use a different transcription instead, point at it
+explicitly (`--text`, `PUREBIBLE_TEXT`) or drop it in
+`~/.local/share/purebible/SW1769Bible_both.txt`, which takes precedence
+over the bundled copy. Bundled transcription from the
+[KingJamesPureBibleSearch](https://github.com/dewhisna/KingJamesPureBibleSearch)
+project.
 
 `pipx` keeps it off system python — Arch is
 externally-managed, so plain `pip` would need `--break-system-packages`.
@@ -47,7 +52,8 @@ pip install -e . --break-system-packages   # gives `purebible` + short alias `pb
 python3 -m purebible "John 3:16"
 ```
 
-Needs the KJV text (ships with purebiblesearch, 8.8 MB) — one-time setup:
+The KJV text ships bundled (`purebible/data/`), so a checkout works out
+of the box — to use a different copy instead, one-time setup:
 
 ```sh
 mkdir -p ~/.local/share/purebible

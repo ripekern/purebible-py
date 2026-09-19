@@ -228,6 +228,8 @@ def find_text_file(explicit: str | None = None) -> str | None:
         os.path.join(here, "..", "data", "SW1769Bible_both.txt"),
         os.path.expanduser("~/.local/share/purebible/SW1769Bible_both.txt"),
         os.path.expanduser("~/.config/purebible/SW1769Bible_both.txt"),
+        # bundled text (purebible/data/ — ships in the wheel, works out of the box)
+        os.path.join(here, "data", "SW1769Bible_both.txt"),
         # original checkout locations (dev convenience)
         os.path.expanduser("~/Work/purebiblesearch/text/complete/SW1769Bible_both.txt"),
     ]

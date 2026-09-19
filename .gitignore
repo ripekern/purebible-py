@@ -24,4 +24,6 @@ htmlcov/
 *~
 
 # local data overrides (text is found via PUREBIBLE_TEXT / shared dirs)
+# (bundled text in purebible/data/ IS tracked)
 data/
+!purebible/data/
