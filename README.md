@@ -16,7 +16,7 @@ purebible tui "love*"          # fullscreen: j/k, /, :, n/N, y, q
 
 ```sh
 sudo pacman -S python-pipx      # isolated CLI installs, the Arch-friendly way
-pipx install git+https://github.com/<you>/purebible-py.git
+pipx install git+https://github.com/ripekern/purebible-py.git
 mkdir -p ~/.local/share/purebible   # KJV text, 9 MB, public domain
 curl -L https://raw.githubusercontent.com/dewhisna/KingJamesPureBibleSearch/master/text/complete/SW1769Bible_both.txt \
   -o ~/.local/share/purebible/SW1769Bible_both.txt
@@ -27,7 +27,7 @@ purebible tui                   # full-screen mode
 No AUR package (yet). `pipx` keeps it off system python — Arch is
 externally-managed, so plain `pip` would need `--break-system-packages`.
 Without pipx: `pip install --user --break-system-packages
-git+https://github.com/<you>/purebible-py.git`. Zero runtime
+git+https://github.com/ripekern/purebible-py.git`. Zero runtime
 dependencies either way (curses ships with Arch's `python`).
 
 ## Install for development
