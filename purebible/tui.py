@@ -726,16 +726,18 @@ class _UI:
             return f"{before + 1}–{before + len(shown)} of {mid}"
         return mid
 
-    def _tag_attr(self, kind: str) -> int:
-        """lualine-style mode-tag highlight (theme color + reverse)."""
+    def _tag_attr(self, kind: str, reverse: bool = True) -> int:
+        """lualine-style mode-tag highlight (theme color, reverse for footer)."""
         import curses
         if self._mono:
-            return curses.A_BOLD | curses.A_REVERSE
-        pair = {"normal": 2, "insert": 3, "command": 4, "help": 5}.get(kind, 2)
-        try:
-            return curses.color_pair(pair) | curses.A_BOLD | curses.A_REVERSE
-        except Exception:
-            return curses.A_BOLD | curses.A_REVERSE
+            base = curses.A_BOLD
+        else:
+            pair = {"normal": 2, "insert": 3, "command": 4, "help": 5}.get(kind, 2)
+            try:
+                base = curses.color_pair(pair) | curses.A_BOLD
+            except Exception:
+                base = curses.A_BOLD
+        return base | curses.A_REVERSE if reverse else base
 
     def _footer(self, stdscr, H: int, W: int, kind: str, rest: str, right: str = "",
                 cursor: int = -1) -> None:
@@ -748,14 +750,18 @@ class _UI:
         import curses
         if self._flash is not None:
             rest, right, cursor = self._flash, "", -1
-        tags = {"normal": " NORMAL ", "insert": " INSERT ",
-                "command": " COMMAND ", "help": " HELP "}
-        tag = tags.get(kind, " NORMAL ") + " "
+        tags = {"normal": " NORMAL ▶ ", "insert": " INSERT ▶ ",
+                "command": " COMMAND ▶ ", "help": " HELP ▶ "}
+        tag = tags.get(kind, " NORMAL ▶ ")
+        gap = "  "
         dim = getattr(curses, "A_DIM", 0)
         try:
             x = 0
             stdscr.addnstr(H - 1, 0, tag[:W], W, self._tag_attr(kind))
             x = min(W, len(tag))
+            if x < W:
+                stdscr.addnstr(H - 1, x, gap[:W - x], W - x, 0)
+                x = min(W, x + len(gap))
             if rest and x < W:
                 if 0 <= cursor <= len(rest):
                     pre, ch, post = rest[:cursor], rest[cursor:cursor + 1], rest[cursor + 1:]
@@ -798,7 +804,7 @@ class _UI:
         bw = inner + 4
         x0 = max(0, (W - bw) // 2)
         y0 = max(1, H // 3 - 1)
-        border = self._tag_attr("command")
+        border = self._tag_attr("command", reverse=False)
         title = " COMMAND "
         if bw >= len(title) + 6:
             top = "┌─" + title + "─" * (bw - 3 - len(title)) + "┐"
@@ -818,7 +824,7 @@ class _UI:
                 stdscr.addnstr(y0 + 1, cx, ch[:W - cx], W - cx, curses.A_REVERSE)
                 cx = min(W, cx + 1)
             if cx < W:
-                post = disp[ccur + 1:].ljust(max(0, inner - len(disp)))
+                post = disp[ccur + 1:].ljust(max(0, inner - ccur - 1))
                 stdscr.addnstr(y0 + 1, cx, post[:W - cx], W - cx, curses.A_BOLD)
                 cx = min(W, cx + len(post))
             if cx < W:
