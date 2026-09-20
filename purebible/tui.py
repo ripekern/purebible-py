@@ -672,8 +672,9 @@ class _UI:
                     continue
                 ref_attr = self._ref_attr()
                 if hi == self.sel:
-                    ref_attr |= curses.A_REVERSE
-                    text_attr = curses.A_REVERSE
+                    # subtle selection: theme-colored bold text, no
+                    # reverse-video white block.
+                    text_attr = self._sel_attr()
                 else:
                     text_attr = 0
                 try:
@@ -699,6 +700,16 @@ class _UI:
 
     def _ref_attr(self) -> int:
         """Theme-colored ref attribute (bold monochrome under NO_COLOR)."""
+        import curses
+        if self._mono:
+            return curses.A_BOLD
+        try:
+            return curses.color_pair(1) | curses.A_BOLD
+        except Exception:
+            return curses.A_BOLD
+
+    def _sel_attr(self) -> int:
+        """Subtle selection attribute: bold (+ theme color), never reverse."""
         import curses
         if self._mono:
             return curses.A_BOLD
