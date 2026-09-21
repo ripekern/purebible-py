@@ -16,12 +16,14 @@ Layout
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
 import textwrap
 import time
 
+from .bible import CANON_GROUPS
 from .refs import looks_like_reference, resolve_reference
 from .search import search as run_search
 
@@ -30,11 +32,11 @@ _SEARCH_CAP = 100  # max rows shown for a search (reading a chapter is uncapped)
 _THEME_CACHE: str | None = None
 
 
-# -- built-in help screen (:h / :help) -------------------------------------
+# -- built-in help screens (:h / :help and :e / :examples) ------------------
 # ("h1"/"h2" = section headers, "row" = key/desc column, "" = plain body)
-# NOTE: examples live in :help (SEARCH_EXAMPLES below + FAMOUS_PATTERNS)
-# — the start screen just points at :h. CLI flag tables are
-# imported from cli.py so the two helps can't drift apart.
+# NOTE: examples live in the :e overlay (EXAMPLES below, merged greatest
+# to least). CLI flag tables are imported from cli.py so the two helps
+# can't drift apart.
 
 from .cli import LOOKUP_OPTS, SEARCH_OPTS
 
@@ -44,44 +46,148 @@ def _cli_rows(opts: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return [("row", f"  {flag.ljust(width)}  {desc}") for flag, desc in opts]
 
 
-# Famous kjvcode.com patterns. Single source for :help AND the start
-# screen: (query, verified count, what it reveals). Counts were verified
-# against this engine — see shell history.
+# Palette for cross-referencing repeated numbers in the examples overlay.
+# Pairs 6..11 are initialized in _UI.main(); number -> pair cycles through
+# them in first-seen order, so shared digits visibly share a color.
+_NUM_PAIRS = 6
 
-FAMOUS_PATTERNS: list[tuple[str, str, str]] = [
-    ("The Father | Holy Ghost | The Word", "777", "the Godhead named"),
-    ("Verily I say unto", "77", "Jesus' signature phrase"),
-    ("Amen\\C", "77", "last word of the Bible (\\C sensitive)"),
-    ("hallelujah | alleluia", "4", "one praise, both spellings"),
-    ("Jehovah", "4", "God's name only 4x in KJV"),
-    ("Alpha | Omega", "8", "first/last, Revelation only"),
-    ("Sabaoth", "2", "Hebrew 'hosts', twice in N.T."),
+# Reference-number prefix on :e rows ("  0001 / ..."). Excluded from the
+# number highlighter so line digits can't fake cross-reference links.
+_ROW_NUM_RE = re.compile(r"^(\s*\d+\s+)")
+
+
+def _layout_help_rows(entries: list[tuple[str, str]]) -> list[tuple]:
+    """Group overlay entries into wide-mode screen rows (paired)."""
+    rows: list[tuple] = []
+    i, n = 0, len(entries)
+    while i < n:
+        if i + 1 < n:
+            rows.append((entries[i], entries[i + 1]))
+        else:
+            rows.append((entries[i], None))
+        i += 2
+    return rows
+
+
+def _repeat_number_runs(texts: list[str]) -> list[str]:
+    """Digit runs (2+ digits, plus '7') found in 2+ rows, first-seen order.
+
+    Maximal runs only, so 639 and 6391 never link; within-row repeats
+    don't self-trigger. Pure helper (no curses) for testability.
+    """
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for t in texts:
+        # appearance order (not set order) so colors are stable run to run
+        for m in dict.fromkeys(re.findall(r"\d+", t)):
+            if len(m) < 2 and m != "7":
+                continue
+            if m not in counts:
+                counts[m] = 0
+                order.append(m)
+            counts[m] += 1
+    return [m for m in order if counts[m] >= 2]
+
+
+# Curated examples. Single source for the :e overlay — every entry was
+# verified against this engine (counts are hits, not verses; slash-pairs
+# like 81 / 70v give hits / verses). kind is "word" (single token),
+# "phrase" (exact, consecutive words), "multi" (OR / AND / wildcards /
+# case override), "flags" (\C case and inline --chapter/--book scopes)
+# or "signatures" (totals that cross-reference each other and CANON).
+# :e merges every kind into one list, greatest to least; each entry
+# runs from / as typed.
+
+EXAMPLES: list[tuple[str, str, str, str]] = [
+    # -- single words --
+    ("Jesus", "973", "139x7, cf Jesus* 983", "word"),
+    ("mercy", "276", "every soul saved, Acts 27:37", "word"),
+    ("Abraham", "231", "33x7 (cf wine: 231)", "word"),
+    ("wine", "231", "33x7 (Gen 14:18, to Abraham)", "word"),
+    ("beast", "180", "60+60+60", "word"),
+    ("atonement", "81 / 70v", "in exactly 70 verses, 10x7", "word"),
+    ("cross", "28", "4x7", "word"),
+    ("charity", "28", "4x7, greatest of these", "word"),
+    ("forgiveness", "7", "perfect 7, in 7 verses", "word"),
+    # -- phrases --
+    ("saith the LORD", "854", "122x7, God's signature", "phrase"),
+    ("Son of man", "196", "Jesus' title, 28x7", "phrase"),
+    ("Jesus Christ", "196", "28x7 — same as Son of man!", "phrase"),
+    ("Lord Jesus Christ", "84", "the full title, 12x7", "phrase"),
+    ("Verily I say unto", "77", "Jesus' signature phrase", "phrase"),
+    ("In the beginning", "17", "matches 'for it is written'", "phrase"),
+    ("for it is written", "17", "matches 'In the beginning'", "phrase"),
+    ("Holy Spirit", "7", "perfect 7 (cf Holy Ghost: 90)", "phrase"),
+    ("bottomless pit", "7", "perfect 7", "phrase"),
+    ("a thousand years", "7", "perfect 7 (Rev 20+)", "phrase"),
+    ("six hundred thousand", "7", "the Exodus multitude", "phrase"),
+    ("Know that I am the LORD", "77", "perfect 77 in 77 verses", "phrase"),
+    ("The Voice of the LORD", "49", "7x7", "phrase"),
+    ("His love", "7", "first mention Deut 7:7", "phrase"),
+    # -- multi-word (operators) --
+    ("grace | mercy | peace", "875", "125x7, pastoral greeting", "multi"),
+    ("The Father | Holy Ghost | The Word", "777", "the Godhead named (OR)", "multi"),
+    ("mercy | truth", "511", "73x7, met together (Ps 85:10)", "multi"),
+    ("Sin | Forgiven", "490", "70x7 (forgiven joins forgiv* 112)", "multi"),
+    ("Justified | Blood", "490", "70x7", "multi"),
+    ("disciple*", "273", "39x7 (cf 39 OT books)", "multi"),
+    ("sing*", "196", "wildcard sing/sang/sung, 28x7, same as the twins", "multi"),
+    ("preach*", "154", "fishers of men + PREACHER title", "multi"),
+    ("repent*", "112", "16x7, twin of forgiv*", "multi"),
+    ("forgiv*", "112", "16x7, twin of repent*", "multi"),
+    ("bond | free", "78 / 70v", "70 verses like atonement", "multi"),
+    ("male | female", "70 / 49v", "both sevened (Gen 1:27)", "multi"),
+    ("flesh & blood", "28", "AND in same verse, 4x7", "multi"),
+    ("blood & water", "18", "from His side: life", "multi"),
+    ("Peter & John", "18", "the two pillars", "multi"),
+    # -- flags (case / scopes) --
+    ("LORD\\C", "6391", "913x7, the covenant name", "flags"),
+    ("--chapter faith & grace", "1281", "183x7 (Eph 2:8 inside)", "flags"),
+    ("Lord\\C", "1211", "173x7", "flags"),
+    ("--book hope & charity", "938", "134x7", "flags"),
+    ("Amen\\C", "77", "last word of the Bible (\\C sensitive)", "flags"),
+    ("Word\\C", "7", "the divine Word, all John", "flags"),
+    # -- signatures (totals that cross-reference each other and CANON) --
+    ("David | Abraham", "1316", "188x7 (lamb family)", "multi"),
+    ("Jesus*", "983", "967 + 6 JESUS + 10 Jesus'; NT ends 188,983", "signatures"),
+    ("--firstlast In | Amen", "777", "first & last words", "signatures"),
+    ("Beast | Mark | Sin", "666", "the beast number", "multi"),
+    ("--law Moses", "639", "634 in text + 5 titles; OT ends 634,555", "signatures"),
+    ("--law In | Israel\\C", "613", "613 commandments, in 555 verses", "signatures"),
+    ("Christ", "555", "OT ends 634,555", "signatures"),
+    ("--firstlast God | Jesus", "343", "7x7x7, first & last books", "signatures"),
+    ("book", "214", "188 in text + 26 titles; book of life", "signatures"),
+    ("call", "196", "28x7, joins the 196 twins", "signatures"),
+    ("lamb*", "188", "Lamb's book of life (Rev 21:27)", "signatures"),
+    ("life* --nt", "188", "book of life, NT only", "signatures"),
+    ("hearken", "153", "cf 153 fishes", "signatures"),
+    ("Fish | Men --gospels", "153", "153 fishes, John 21", "signatures"),
+    ("tribes", "112", "16x7, joins repent*/forgiv*; twelve tribes", "signatures"),
+    ("beloved", "111", "3x37", "signatures"),
+    ("Moses --nt", "77", "Moses 77x in the NT", "signatures"),
+    ("Son & Jesus", "70", "70 in 70 verses, like atonement", "multi"),
+    ("cross | tree --gospels", "49", "7x7 in Gospels", "signatures"),
+    ("Word of God", "49", "7x7", "phrase"),
+    ("love\\C --gospels", "49", "lowercase love, 7x7 in Gospels", "signatures"),
+    ("crucified", "37", "perfect 37 in 37", "signatures"),
+    ("ordained", "37", "perfect 37 in 37, incl. titles", "signatures"),
+    ("saviour", "37", "perfect 37 in 37", "signatures"),
+    ("sow", "37", "the sower, perfect 37 in 37", "signatures"),
+    ("thirty and seven", "7", "thirty-seven itself, sevened", "signatures"),
 ]
 
 
-def _famous_rows() -> list[tuple[str, str]]:
-    width = max(len(q) for q, _, _ in FAMOUS_PATTERNS)
-    return [("row", f"  {q.ljust(width)}  {c} — {m}")
-            for q, c, m in FAMOUS_PATTERNS]
-
-
-def _example_rows() -> list[tuple[str, str]]:
-    return [("row", f"  / {ex}") for ex in SEARCH_EXAMPLES]
-
-
-# Example queries (shown in :help; each runs from / as typed).
-
-SEARCH_EXAMPLES = [
-    "God said",
-    "God | Jesus",
-    "James* & John*",
-    "love & -loved",
-    "four*",
-    "God * heaven",
-    "love*",
-    "Father | Son | Holy Ghost",
-    "The Father | Holy Ghost | The Word",
-    "seven*",
+EXAMPLES_HELP: list[tuple[str, str]] = [
+    ("h1", "purebible — examples"),
+    ("", ""),
+    ("", "  The entire King James Bible — cover, titles, chapters,"),
+    ("", "  verses, words — counts 823,543 = 7^7 (the Elton anomaly)."),
+    ("", "  Every figure below was verified in this engine; together"),
+    ("", "  they unpack that total, greatest to least."),
+    ("", ""),
+    ("", "  Counts verified in this engine (hits, not verses)."),
+    ("", "  Every entry runs from / as typed, greatest to least."),
+    ("", ""),
 ]
 
 
@@ -135,6 +241,7 @@ HELP: list[tuple[str, str]] = [
     ("row", "  :yank             yank selected verse"),
     ("row", "  :w                nothing to save — text is read-only"),
     ("row", "  :h  (:help)       this screen"),
+    ("row", "  :e  (:examples)   examples by category (separate screen)"),
     ("row", "  :q  (:wq)         quit"),
     ("", ""),
     ("h2", "SEARCH PATTERNS"),
@@ -145,6 +252,10 @@ HELP: list[tuple[str, str]] = [
     ("row", "  love*  *eth       wildcards *, ?, [seq] per word"),
     ("row", "  *                 any single word (gap)"),
     ("row", "  \\c / \\C          vim case override (\\C = sensitive)"),
+    ("row", "  --chapter/--book  scope for '&' (last one wins)"),
+    ("row", "  --law/--prophets/--ot/--nt  canon filter (last wins)"),
+    ("row", "  --gospels/--letters/--prophecy  gospels, Rom-Jude, Rev"),
+    ("row", "  --firstlast  Genesis + Revelation"),
     ("", "  Phrases run on the whole-Bible word stream, so they may span"),
     ("", "  a verse boundary — like the C++ engine."),
     ("", "  Big searches page in 100s — C-f / C-b, or refine with & or *."),
@@ -156,17 +267,16 @@ HELP: list[tuple[str, str]] = [
     ("row", "  cross-chapter range"),
     ("row", "  abbreviations: Gen Ex Lev Ps Jn Rom Rev ..."),
     ("", ""),
-    ("h2", "EXAMPLES  (run from / as typed)"),
-    *_example_rows(),
-    ("", ""),
-    ("h2", "FAMOUS PATTERNS  (from kjvcode.com — counts verified in this engine)"),
-    *_famous_rows(),
-    ("", ""),
     ("h2", "CLI SEARCH OPTIONS  (`purebible search …` in a shell)"),
     *_cli_rows(SEARCH_OPTS),
     ("", ""),
     ("h2", "CLI LOOKUP OPTIONS  (`purebible lookup …` in a shell)"),
     *_cli_rows(LOOKUP_OPTS),
+    ("", ""),
+    ("h2", "EXAMPLES"),
+    ("row", "  :e  examples, greatest to least — counts verified"),
+    ("row", "      a number glowing in 2+ rows links those totals;"),
+    ("row", "      descriptions glow past 10"),
     ("", ""),
 ]
 
@@ -251,6 +361,8 @@ class _UI:
         self._z_pending = False  # saw 'Z' in NORMAL, awaiting second Z/Q
         self.help_top = 0  # scroll offset for the help screen
         self.help_open = False  # help overlay (stays up while you type)
+        self.examples_top = 0  # scroll offset for the examples screen
+        self.examples_open = False  # :e overlay (stays up while you type)
         self._back: list = []  # jumplist: (query, hits, nverses, sel, msg, view, page)
         self._view = "search"  # "search" (paged display) | "read" (chapter/lookup)
         self._page = 0  # result page (searches page in 100s, nvim C-f/C-b)
@@ -275,6 +387,29 @@ class _UI:
             self._page = 0
             self._say("empty query")
             return
+        # inline scope markers (same as `purebible search --chapter/--book`):
+        # last one wins, stripped before the search runs
+        constrain = "verse"
+        marks = {"--verse": "verse", "--chapter": "chapter", "--book": "book"}
+        canon_marks = {"--law": "law", "--prophets": "prophets", "--ot": "ot",
+                       "--nt": "nt", "--gospels": "gospels",
+                       "--letters": "letters", "--prophecy": "prophecy",
+                       "--firstlast": "firstlast"}
+        toks = q.split()
+        scoped = [t for t in toks if t in marks]
+        if scoped:
+            constrain = marks[scoped[-1]]
+            toks = [t for t in toks if t not in marks]
+        canons = [t for t in toks if t in canon_marks]
+        canon = canon_marks[canons[-1]] if canons else None
+        if canons:
+            toks = [t for t in toks if t not in canon_marks]
+        q = " ".join(toks)
+        if not q:
+            self.hits, self.nverses, self.ms = [], 0, 0.0
+            self._page = 0
+            self._say("empty query")
+            return
         if looks_like_reference(q):
             try:
                 verses = resolve_reference(self.bible, q)
@@ -290,7 +425,9 @@ class _UI:
         else:
             t0 = time.time()
             try:
-                hits, nv = run_search(self.bible, q)
+                hits, nv = run_search(
+                    self.bible, q, constrain=constrain,
+                    books=CANON_GROUPS.get(canon) if canon else None)
             except Exception as e:  # never crash the TUI on bad pattern
                 self._say(f"search error: {e}")
                 return
@@ -310,6 +447,12 @@ class _UI:
         if c in ("h", "help"):
             self.help_open = True
             self.help_top = 0
+            self.examples_open = False
+            return True
+        if c in ("e", "examples"):
+            self.examples_open = True
+            self.examples_top = 0
+            self.help_open = False
             return True
         if c in ("clear", "cls"):
             self.query = ""
@@ -425,8 +568,21 @@ class _UI:
                          5: curses.COLOR_MAGENTA}
                 for num, fg in pairs.items():
                     curses.init_pair(num, fg, -1)
+                # number-highlighter pairs 6..11 (examples overlay)
+                for i, fg in enumerate((curses.COLOR_GREEN, curses.COLOR_YELLOW,
+                                        curses.COLOR_MAGENTA, curses.COLOR_RED,
+                                        curses.COLOR_CYAN, curses.COLOR_BLUE)):
+                    curses.init_pair(6 + i, fg, -1)
             except Exception:
                 self._mono = True
+            # reference-number tan (pair 12): isolated so a missing
+            # 256-color tan can never knock out the main palette
+            try:
+                if not self._mono:
+                    tan = 180 if curses.COLORS >= 256 else curses.COLOR_YELLOW
+                    curses.init_pair(12, tan, -1)
+            except Exception:
+                pass
 
         # nvim-style: always start in NORMAL (even with no query).
 
@@ -452,6 +608,7 @@ class _UI:
                 self.mode = "normal"
                 self._hist_push(kind, line)
                 self.help_open = False  # reveal the results underneath
+                self.examples_open = False
                 if kind == "insert":
                     self._run(line)
                 else:
@@ -486,9 +643,10 @@ class _UI:
             return None
 
         # NORMAL mode — the ONLY mode that can quit (nvim-style).
-        # With help open, dismiss keys only close the overlay, never quit.
-        if self.help_open and ch in (ord("q"), 27, 10, 13, curses.KEY_ENTER, ord("Z")):
+        # With an overlay open, dismiss keys only close it, never quit.
+        if (self.help_open or self.examples_open) and ch in (ord("q"), 27, 10, 13, curses.KEY_ENTER, ord("Z")):
             self.help_open = False
+            self.examples_open = False
             self._z_pending = False
             return None
         if ch == 27:
@@ -517,23 +675,37 @@ class _UI:
             self._cursor = len(self.query)
         elif ch == ord(":"):
             self.mode, self.buf, self._cursor = "command", "", 0
-        elif self.help_open:
-            # help overlay open: scroll it (dismiss keys handled above;
-            # / i a : above enter their prompts with help still open)
+        elif self.help_open or self.examples_open:
+            # overlay open: scroll it (dismiss keys handled above;
+            # / i a : above enter their prompts with it still open)
+            entries = HELP if self.help_open else self._examples_entries()
+            top = self.help_top if self.help_open else self.examples_top
+            try:
+                _H, _W = stdscr.getmaxyx()
+            except Exception:
+                _W = 80
+            if _W >= 80 and self.help_open:
+                bound = len(_layout_help_rows(entries)) - 1
+            else:
+                bound = len(entries) - 1
             page = 15
             if ch in (ord("j"), curses.KEY_DOWN):
-                self.help_top += 1
+                top += 1
             elif ch in (ord("k"), curses.KEY_UP):
-                self.help_top = max(0, self.help_top - 1)
+                top = max(0, top - 1)
             elif ch == 4:  # C-d
-                self.help_top += page
+                top += page
             elif ch == 21:  # C-u
-                self.help_top = max(0, self.help_top - page)
+                top = max(0, top - page)
             elif ch == ord("G"):
-                self.help_top = max(0, len(HELP) - 1)
+                top = max(0, bound)
             elif ch == ord("g"):
-                self.help_top = 0
-            self.help_top = min(self.help_top, max(0, len(HELP) - 1))
+                top = 0
+            top = min(top, max(0, bound))
+            if self.help_open:
+                self.help_top = top
+            else:
+                self.examples_top = top
             return None
         elif ch in (ord("j"), curses.KEY_DOWN):
             self.sel = min(self._shown_len() - 1, self.sel + 1) if self.hits else 0
@@ -598,8 +770,8 @@ class _UI:
         except Exception:
             pass
         if self.help_open:
-            self._draw_help(stdscr, H, W)  # body; footer follows the live mode
-            right = f"{len(self.bible):,} verses"
+            self.help_top = self._draw_help(stdscr, H, W, HELP, self.help_top)
+            right = self._stats_right()
             if self.mode == "insert":
                 self._footer(stdscr, H, W, "insert", f"/{self.buf}", right,
                              cursor=1 + self._cursor)
@@ -609,6 +781,25 @@ class _UI:
                 self._draw_cmd_popup(stdscr, H, W)
             else:
                 self._footer(stdscr, H, W, "help", "", right)
+            return
+        if self.examples_open:
+            entries = self._examples_entries()
+            rep = _repeat_number_runs([_ROW_NUM_RE.sub("", t)
+                                       for k, t in entries if k == "row"])
+            num_map = {m: i % _NUM_PAIRS for i, m in enumerate(rep)}
+            self.examples_top = self._draw_help(stdscr, H, W, entries,
+                                                self.examples_top, num_map,
+                                                single_column=True)
+            right = self._stats_right()
+            if self.mode == "insert":
+                self._footer(stdscr, H, W, "insert", f"/{self.buf}", right,
+                             cursor=1 + self._cursor)
+            elif self.mode == "command":
+                self._footer(stdscr, H, W, "command",
+                             f"/{self.query}" if self.query else "", right)
+                self._draw_cmd_popup(stdscr, H, W)
+            else:
+                self._footer(stdscr, H, W, "examples", "", right)
             return
         fresh = not self.hits and not self.query  # nothing searched yet
         if fresh:
@@ -718,11 +909,39 @@ class _UI:
         except Exception:
             return curses.A_BOLD
 
+    def _examples_entries(self) -> list[tuple[str, str]]:
+        """One list, greatest to least: static EXAMPLES plus live canon
+        group totals. Every row runs from / as typed."""
+        gw = self.bible.group_words()
+        total = self.bible.totals()[1]
+        labels = [("ot", "old testament"), ("nt", "new testament"),
+                  ("prophets", "prophets"), ("law", "law"),
+                  ("gospels", "gospels"), ("letters", "letters (Rom-Jude)"),
+                  ("prophecy", "prophecy (Revelation)"),
+                  ("firstlast", "first & last books")]
+        items: list[tuple[str, int, str, str]] = [
+            (q, int(c.split("/")[0].replace(",", "").strip()), c, m)
+            for q, c, m, _ in EXAMPLES
+        ]
+        items.append(("?*", total, f"{total:,}", "every word & number"))
+        items += [(f"?* --{g}", gw[g], f"{gw[g]:,}", lab) for g, lab in labels]
+        items.sort(key=lambda t: -t[1])
+        width = max(len(q) for q, _, _, _ in items)
+        rows: list[tuple[str, str]] = list(EXAMPLES_HELP)
+        rows += [("row", f"  {i:04d} / {q.ljust(width)}  {c} — {m}")
+                 for i, (q, _, c, m) in enumerate(items, 1)]
+        return rows
+
     def _stats_right(self) -> str:
-        """Pattern-finding stats: hits · verses · chapters · books."""
+        """Pattern-finding stats: hits · verses · chapters · books.
+
+        Idle (nothing searched): total words · OT words · NT words.
+        """
         if not self.hits and not self.query:
-            return f"{len(self.bible):,} verses"
-        n_books = len({h.verse.book for h in self.hits})
+            nw = self.bible.totals()[1]
+            gw = self.bible.group_words()
+            return f"{nw:,} words · {gw['ot']:,} OT · {gw['nt']:,} NT"
+        n_books = len({h.verse.book for h in self.hits if h.verse.book})
         n_chaps = len({(h.verse.book, h.verse.chapter) for h in self.hits})
 
         def pl(n: int, one: str, many: str) -> str:
@@ -743,7 +962,8 @@ class _UI:
         if self._mono:
             base = curses.A_BOLD
         else:
-            pair = {"normal": 2, "insert": 3, "command": 4, "help": 5}.get(kind, 2)
+            pair = {"normal": 2, "insert": 3, "command": 4, "help": 5,
+                    "examples": 5}.get(kind, 2)
             try:
                 base = curses.color_pair(pair) | curses.A_BOLD
             except Exception:
@@ -762,7 +982,8 @@ class _UI:
         if self._flash is not None:
             rest, right, cursor = self._flash, "", -1
         tags = {"normal": " NORMAL ▶ ", "insert": " INSERT ▶ ",
-                "command": " COMMAND ▶ ", "help": " HELP ▶ "}
+                "command": " COMMAND ▶ ", "help": " HELP ▶ ",
+                "examples": " EXAMPLES ▶ "}
         tag = tags.get(kind, " NORMAL ▶ ")
         gap = "  "
         dim = getattr(curses, "A_DIM", 0)
@@ -844,37 +1065,67 @@ class _UI:
         except Exception:
             pass
 
-    def _draw_help(self, stdscr, H: int, W: int) -> None:
-        import curses
-        top = 2
-        visible = max(1, H - 3)  # rows 2..H-2; footer lives at H-1
-        two = W >= 80
-        span = 2 * visible if two else visible
-        self.help_top = max(0, min(self.help_top, max(0, len(HELP) - span)))
+    def _draw_help(self, stdscr, H: int, W: int,
+                     entries: list[tuple[str, str]], top: int,
+                     num_map: dict[str, int] | None = None,
+                     single_column: bool = False) -> int:
+        """Draw a scrolling overlay (HELP or EXAMPLES); return new top.
 
+        num_map (number -> palette index) highlights repeated numbers so
+        shared totals visibly link across example rows; None disables.
+        single_column forces one column (the examples overlay).
+        """
+        import curses
+        t = 2
+        visible = max(1, H - 3)  # rows 2..H-2; footer lives at H-1
+        two = W >= 80 and not single_column
         if not two:
+            top = max(0, min(top, max(0, len(entries) - visible)))
             for row in range(visible):
-                li = self.help_top + row
-                if li >= len(HELP):
+                li = top + row
+                if li >= len(entries):
                     break
-                self._draw_help_cell(stdscr, top + row, 0, HELP[li], W, W)
-            return
+                self._draw_help_cell(stdscr, t + row, 0, entries[li], W, W,
+                                     num_map)
+            return top
+        row_groups = _layout_help_rows(entries)
+        top = max(0, min(top, max(0, len(row_groups) - visible)))
         col_w = (W - 3) // 2
         for row in range(visible):
-            for col, li in ((0, self.help_top + row),
-                            (1, self.help_top + visible + row)):
-                if li >= len(HELP):
-                    continue
-                self._draw_help_cell(stdscr, top + row, col * (col_w + 3),
-                                     HELP[li], col_w, W)
+            li = top + row
+            if li >= len(row_groups):
+                break
+            left, right = row_groups[li]
+            if left is not None:
+                self._draw_help_cell(stdscr, t + row, 0, left,
+                                     col_w, W, num_map)
+            if right is not None:
+                self._draw_help_cell(stdscr, t + row, col_w + 3, right,
+                                     col_w, W, num_map)
             try:
-                stdscr.addnstr(top + row, col_w + 1, "│"[:W - col_w - 1],
+                stdscr.addnstr(t + row, col_w + 1, "│"[:W - col_w - 1],
                                W - col_w - 1, getattr(curses, "A_DIM", 0))
             except Exception:
                 pass
+        return top
+
+    def _num_attr(self, pair_idx: int) -> int:
+        """Palette style for a highlighted number: 6 colors alternate
+        bold then plain for 12 distinct styles before cycling."""
+        import curses
+        if self._mono:
+            return curses.A_BOLD
+        try:
+            base = curses.color_pair(6 + (pair_idx % _NUM_PAIRS))
+        except Exception:
+            return curses.A_BOLD
+        if (pair_idx % (2 * _NUM_PAIRS)) < _NUM_PAIRS:
+            return base | curses.A_BOLD
+        return base
 
     def _draw_help_cell(self, stdscr, y: int, x: int,
-                        entry: tuple[str, str], width: int, W: int) -> None:
+                         entry: tuple[str, str], width: int, W: int,
+                         num_map: dict[str, int] | None = None) -> None:
         import curses
         kind, text = entry
         if kind == "h1" and not self._mono:
@@ -883,10 +1134,60 @@ class _UI:
             attr = curses.A_BOLD
         else:
             attr = 0
-        try:
-            stdscr.addnstr(y, x, text[:width][:max(0, W - x)], max(0, W - x), attr)
-        except Exception:
-            pass
+        disp = text[:width][:max(0, W - x)]
+        if not num_map or kind != "row" or not disp:
+            try:
+                stdscr.addnstr(y, x, disp, max(0, W - x), attr)
+            except Exception:
+                pass
+            return
+        # segmented draw: repeated numbers glow in their mapped color.
+        # A leading reference number (if any) always stays plain.
+        cx = x
+        m_pre = _ROW_NUM_RE.match(disp)
+        if m_pre:
+            try:
+                pre_attr = 0 if self._mono else curses.color_pair(12)
+            except Exception:
+                pre_attr = 0
+            try:
+                stdscr.addnstr(y, cx, m_pre.group(1)[:max(0, W - cx)],
+                               max(0, W - cx), pre_attr)
+            except Exception:
+                pass
+            cx += len(m_pre.group(1))
+            disp = disp[len(m_pre.group(1)):]
+        # glow numbers in the query/count head; the "— note" lights
+        # only numbers greater than 10
+        head, sep, note = disp.partition(" — ")
+        for tok in re.split(r"(\d+)", head):
+            if not tok or cx >= W:
+                break
+            if tok.isdigit() and tok in num_map:
+                a = self._num_attr(num_map[tok])
+            else:
+                a = attr
+            try:
+                stdscr.addnstr(y, cx, tok[:max(0, W - cx)], max(0, W - cx), a)
+            except Exception:
+                pass
+            cx += len(tok)
+        if sep and cx < W:
+            rest = sep + note
+            # notes: shared numbers greater than 10 only
+            for tok in re.split(r"(\d+)", rest):
+                if not tok or cx >= W:
+                    break
+                if tok.isdigit() and tok in num_map and int(tok) > 10:
+                    a = self._num_attr(num_map[tok])
+                else:
+                    a = attr
+                try:
+                    stdscr.addnstr(y, cx, tok[:max(0, W - cx)],
+                                   max(0, W - cx), a)
+                except Exception:
+                    pass
+                cx += len(tok)
 
     def _center_attr(self, kind: str) -> int:
         import curses
@@ -914,9 +1215,15 @@ class _UI:
                 pass
 
     def _draw_welcome(self, stdscr, H: int, W: int) -> None:
-        """Start screen: directions to the help overlay, nothing else."""
-        self._draw_centered(stdscr, H, W, 1, [("type :h for help", "title")])
-        right = f"{len(self.bible):,} verses"
+        """Start screen: one Words heading plus directions to the overlays."""
+        total = self.bible.totals()[1]
+        heading = "7\u2077" if total == 823543 else f"{total:,}"
+        self._draw_centered(stdscr, H, W, 1, [(heading, "title"),
+                                              ("Words", "dim"),
+                                              ("", ""),
+                                              ("type :h for help", "title"),
+                                              ("type :e for examples", "title")])
+        right = self._stats_right()
         if self.mode == "insert":
             self._footer(stdscr, H, W, "insert", f"/{self.buf}", right,
                          cursor=1 + self._cursor)

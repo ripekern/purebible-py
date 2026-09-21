@@ -101,7 +101,7 @@ def _strip_case_markers(ors: list[list[list[str]]]) -> tuple[list[list[list[str]
 
 
 def _verse_key(v) -> tuple:
-    return (v.book, v.chapter, v.verse)
+    return (v.book, v.chapter, v.verse, v.kind)
 
 
 def _book_idx(code: str) -> int:
@@ -179,10 +179,13 @@ def _norm_pat(tok: str, case_sensitive: bool, hyphen_sensitive: bool) -> str:
 
 
 def phrase_stream_matches(bible, tokens: list[str], case_sensitive: bool,
-                          hyphen_sensitive: bool = False) -> list[tuple[int, object, int]]:
+                           hyphen_sensitive: bool = False,
+                           books: set[str] | frozenset[str] | None = None,
+                           ) -> list[tuple[int, object, int]]:
     """Match a token phrase on the global stream.
 
     Returns [(global_pos, verse, word_idx)] ordered by global_pos.
+    books limits matches to entries in those books (canon-group filter).
     """
     if not tokens:
         return []
@@ -191,11 +194,12 @@ def phrase_stream_matches(bible, tokens: list[str], case_sensitive: bool,
     n = len(words)
     m = len(toks)
     if m == 1 and toks[0] == "*":
-        # every verse once (avoid 800k rows)
+        # every entry once (avoid 800k+ rows)
         seen: set[tuple] = set()
         out: list[tuple[int, object, int]] = []
         for i, v in enumerate(pos_verse):
-            if pos_word[i] == 1 and _verse_key(v) not in seen:
+            if pos_word[i] == 1 and _verse_key(v) not in seen \
+                    and (books is None or v.book in books):
                 seen.add(_verse_key(v))
                 out.append((i, v, 1))
         return out
@@ -205,7 +209,8 @@ def phrase_stream_matches(bible, tokens: list[str], case_sensitive: bool,
         out2: list[tuple[int, object, int]] = []
         for i in range(0, n - m + 1):
             v = pos_verse[i]
-            if _verse_key(v) not in seen2:
+            if _verse_key(v) not in seen2 \
+                    and (books is None or v.book in books):
                 seen2.add(_verse_key(v))
                 out2.append((i, v, pos_word[i]))
         return out2
@@ -234,6 +239,8 @@ def phrase_stream_matches(bible, tokens: list[str], case_sensitive: bool,
                 break
         if ok:
             res.append((start, pos_verse[start], pos_word[start]))
+    if books is not None:
+        res = [r for r in res if r[1].book in books]
     res.sort(key=lambda r: r[0])
     return res
 
@@ -246,10 +253,12 @@ def search(
     no_dup: bool = False,
     limit: int = 0,
     hyphen_sensitive: bool = False,
+    books: set[str] | frozenset[str] | None = None,  # canon-group filter
 ) -> tuple[list[Hit], int]:
     """Run query. Returns (hits, verses_matched).
 
     Vim-style \\c / \\C anywhere in the query override case_sensitive.
+    books limits every match to entries in those books (--ot/--nt/…).
     """
     ors, forced = _strip_case_markers(parse_query(query))
     if forced is not None:
@@ -278,15 +287,17 @@ def search(
         excluded: set[tuple] = set()
         for pat in neg_pats:
             for _pos, v, _w in phrase_stream_matches(bible, [pat], case_sensitive,
-                                                     hyphen_sensitive):
+                                                      hyphen_sensitive, books):
                 excluded.add(_verse_key(v))
         if not pos_groups:
-            # all-negative branch: every verse except the excluded ones
+            # all-negative branch: every entry except the excluded ones
             branch_hits.append([Hit(v, 1, -1) for v in bible.verses
-                                if _verse_key(v) not in excluded])
+                                if (books is None or v.book in books)
+                                and _verse_key(v) not in excluded])
             continue
         if len(pos_groups) == 1:
-            ms = phrase_stream_matches(bible, pos_groups[0], case_sensitive, hyphen_sensitive)
+            ms = phrase_stream_matches(bible, pos_groups[0], case_sensitive,
+                                       hyphen_sensitive, books)
             if no_dup:
                 seen: set[tuple] = set()
                 hh: list[Hit] = []
@@ -300,14 +311,15 @@ def search(
                 hh = [h for h in hh if _verse_key(h.verse) not in excluded]
             branch_hits.append(hh)
         else:
-            per_group = [phrase_stream_matches(bible, toks, case_sensitive, hyphen_sensitive)
-                         for toks in pos_groups]
+            per_group = [phrase_stream_matches(bible, toks, case_sensitive,
+                                                   hyphen_sensitive, books)
+                          for toks in pos_groups]
             if constrain == "verse":
                 sets = [{_verse_key(v) for _, v, _ in g} for g in per_group]
                 common = set.intersection(*sets) if sets else set()
-                first = { _verse_key(v): (pos, w) for pos, v, w in per_group[0] }
-                hh2 = [Hit(bible._index[k], first[k][1], first[k][0])
-                       for k in common if k in bible._index]
+                first = {_verse_key(v): (pos, w, v) for pos, v, w in per_group[0]}
+                hh2 = [Hit(first[k][2], first[k][1], first[k][0])
+                        for k in common if k in first]
                 hh2.sort(key=lambda h: h.pos)
                 if no_dup:
                     seen3: set[tuple] = set()
@@ -315,8 +327,13 @@ def search(
             else:
                 sets_s = [{scope(v) for _, v, _ in g} for g in per_group]
                 common_s = set.intersection(*sets_s) if sets_s else set()
-                # fan out: every verse inside a matching scope
-                hh2 = [Hit(v, 1, -1) for v in bible.verses if scope(v) in common_s]
+                # fan out: every text verse inside a matching scope.
+                # Print matter (titles, headings, numbers, divisions,
+                # cover) is structure, not text — excluded so scoped
+                # counts match the verse-text concordance.
+                hh2 = [Hit(v, 1, -1) for v in bible.verses
+                       if v.kind in ("verse", "superscription", "colophon")
+                       and scope(v) in common_s]
                 hh2.sort(key=lambda h: (_book_idx(h.verse.book), h.verse.chapter, h.verse.verse))
             if excluded:
                 hh2 = [h for h in hh2 if _verse_key(h.verse) not in excluded]

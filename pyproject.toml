@@ -1,6 +1,6 @@
 [project]
 name = "purebible"
-version = "0.1.4"
+version = "0.1.5"
 description = "PureBible terminal client for nvim/btop/terminal lovers — vim-keys, btop-style TUI, zero dependencies"
 readme = "README.md"
 requires-python = ">=3.9"
